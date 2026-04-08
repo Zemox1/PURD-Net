@@ -1,0 +1,365 @@
+import torch
+from torchvision.transforms.functional import hflip, vflip
+from PIL import Image
+
+import numpy as np
+
+import pandas as pd
+import random
+from os.path import exists
+
+
+
+class InputTargetDataset:
+    """Parameters:
+    - rgb_depth_priors_tuples: List of filepath tuples of form (rgb, depth, sparse priors)
+    - input_transform: Transform to apply to the input RGB image, returns torch Tensor
+    - target_transform: Transform to apply to the target depth image, returns torch Tensor
+    - all_transform: Transform to apply to both input, target and mask image (and depth samples as well), returns list of torch Tensors
+    - target_samples_transform: Transfrom to apply to both target and depth samples, returns list of torch Tensors
+    - max_priors: max number of priors to subsample
+    - shuffle: shuffle dataset"""
+
+    def __init__(
+        self,
+        rgb_depth_tuples,
+        input_transform,
+        target_transform,
+        all_transform=None,
+        target_samples_transform=None,
+
+        shuffle=False,
+    ) -> None:
+
+        # file paths
+        self.path_tuples = rgb_depth_tuples
+
+        # transforms applied to input and target
+        self.input_transform = input_transform
+        self.target_transform = target_transform
+        self.all_transform = all_transform
+
+        # random shuffle tuples
+        if shuffle:
+            random.shuffle(self.path_tuples)
+
+        # depth_samples
+        self.target_samples_transform = target_samples_transform
+
+
+        # checking dataset for missing files
+        if not check_dataset(self.path_tuples):
+            print("WARNING, dataset has missing files!")
+            # exit(1)
+
+        print(f"Dataset with {len(self)} tuples.")
+
+    def __len__(self):
+        return len(self.path_tuples)
+
+    def __getitem__(self, idx):
+
+        # get filenames
+        I0_fn = self.path_tuples[idx][0]
+        I45_fn = self.path_tuples[idx][1]
+        I90_fn = self.path_tuples[idx][2]
+        I135_fn = self.path_tuples[idx][3]
+        depth_fn = self.path_tuples[idx][4]
+        J_fn = self.path_tuples[idx][5]
+        t_fn = self.path_tuples[idx][6]
+        a_fn = self.path_tuples[idx][7]
+
+        # read imgs
+        I0_img = Image.open(I0_fn).resize((640, 480))
+        I45_img = Image.open(I45_fn).resize((640, 480))
+        I90_img = Image.open(I90_fn).resize((640, 480))
+        I135_img = Image.open(I135_fn).resize((640, 480))
+        depth_img = Image.open(depth_fn).resize((640, 480), resample=Image.NEAREST)
+        J_img = Image.open(J_fn).resize((640, 480))
+        t_img = Image.open(t_fn).resize((640, 480))
+        a_img = Image.open(a_fn).resize((640, 480))
+
+        
+        # apply input/target transforms
+        I0_img = self.input_transform(I0_img)
+        I45_img = self.input_transform(I45_img)
+        I90_img = self.input_transform(I90_img)
+        I135_img = self.input_transform(I135_img)
+        depth_img = self.target_transform(depth_img)
+        depth_img = depth_img.mean(dim=0, keepdim=True)
+        J_img = self.target_transform(J_img)
+        t_img = self.target_transform(t_img)
+        a_img = self.target_transform(a_img)
+        
+        # list of all output tensors
+        tensor_list = [I0_img,I45_img,I90_img,I135_img,depth_img, J_img,t_img,a_img]
+
+        return tensor_list
+
+def check_dataset(path_tuples):
+        """Checks dataset for missing files."""
+        for tuple in path_tuples:
+            for f in tuple:
+                if not exists(f):
+                    print(f"Missing file: {f}.")
+                    return False
+
+        print(f"Checked {len(path_tuples)} tuples for existence, all ok.")
+
+        return True
+
+
+
+class InputDataset:
+    """Similar to InputTargetDataset above, but for inference only. If priors are not available, set `max_priors` to zero."""
+
+    def __init__(self, rgb_tuples, image_transform, max_priors=200) -> None:
+
+        self.path_tuples = rgb_tuples
+        self.image_transform = image_transform
+        self.max_priors = max_priors
+
+        if self.max_priors > 0:
+            print(f"Using priors (max {self.max_priors} per image).")
+            check_dataset(self.path_tuples)
+        else:
+            image_fns = [[t[0]] for t in self.path_tuples]
+            print("Not using priors, using nullprior as placeholder.")
+            check_dataset(image_fns)
+
+    def __len__(self):
+        return len(self.path_tuples)
+
+    def __getitem__(self, idx):
+
+        # get img filename
+        I0_fn = self.path_tuples[idx][0]
+        I45_fn = self.path_tuples[idx][1]
+        I90_fn = self.path_tuples[idx][2]
+        I135_fn = self.path_tuples[idx][3]
+
+        I0_img = Image.open(I0_fn).resize((640, 480))
+        I45_img = Image.open(I45_fn).resize((640, 480))
+        I90_img = Image.open(I90_fn).resize((640, 480))
+        I135_img = Image.open(I135_fn).resize((640, 480))
+        # read img
+
+        # apply image transforms to get tensor
+        I0_img = self.image_transform(I0_img)
+        I45_img = self.image_transform(I45_img)
+        I90_img = self.image_transform(I90_img)
+        I135_img = self.image_transform(I135_img)
+        return [I0_img,I45_img,I90_img,I135_img]
+
+
+class MutualRandomHorizontalFlip:
+    """Randomly flips an input RGB imape and corresponding depth target horizontally with probability p.\\
+    (Either both are transformed or neither of them)"""
+
+    def __init__(self, p=0.5) -> None:
+        self.p = p
+
+    def __call__(self, tensors):
+
+        do_flip = torch.rand(1) < self.p
+
+        # flip
+        if do_flip:
+
+            for i in range(len(tensors)):
+
+                tensors[i] = hflip(tensors[i])
+
+        return tensors
+
+
+class MutualRandomVerticalFlip:
+    """Randomly flips an input RGB imape and corresponding depth target vertically with probability p.\\
+    (Either both are transformed or neither of them)"""
+
+    def __init__(self, p=0.5) -> None:
+        self.p = p
+
+    def __call__(self, tensors):
+        do_flip = torch.rand(1) < self.p
+
+        # flip
+        if do_flip:
+            for i in range(len(tensors)):
+
+                tensors[i] = vflip(tensors[i])
+
+        return tensors
+
+
+class IntPILToTensor:
+    """Converts an int PIL img to a torch float tensor in range [0,1]."""
+
+    def __init__(self, type="uint8", custom_divider=None, device="cpu") -> None:
+
+        self.device = device
+
+        if type == "uint8":
+            self.divider = 255
+        elif type == "uint16":
+            self.divider = 65535
+        else:
+            self.divider = 1
+
+        if custom_divider is not None:
+            self.divider = custom_divider  # ycb-video uses 10'000 as factor
+
+    def __call__(self, img):
+
+        # convert to np array
+        img_np = np.array(img)
+
+        # enforce dimension order: ch x H x W
+        if img_np.ndim == 3:
+            img_np = img_np.transpose((2, 0, 1))
+        elif img_np.ndim == 2:
+            img_np = img_np[np.newaxis, ...]
+
+        # convert to tensor
+        img_tensor = torch.from_numpy(img_np).to(self.device)
+
+        # convert to float and divide by set divider
+        img_tensor = img_tensor.float().div(self.divider)
+
+        return img_tensor
+
+
+class FloatPILToTensor:
+    """Converts a float PIL img to a torch float tensor"""
+
+    def __init__(self, device="cpu"):
+        self.device = device
+
+    def __call__(self, img):
+
+        # convert to np array
+        img_np = np.array(img)
+
+        # enforce dimension order: channels x height x width
+        if img_np.ndim == 2:
+            img_np = img_np[np.newaxis, ...]
+
+        # convert to tensor
+        img_tensor = torch.from_numpy(img_np).to(self.device)
+
+        return img_tensor
+
+
+class MutualRandomFactor:
+    """Multiply tensors by a random factor in given range."""
+
+    def __init__(self, factor_range=(0.75, 1.25)) -> None:
+        self.factor_range = factor_range
+
+    def __call__(self, tensors):
+
+        factor = (
+            torch.rand(1).item() * (self.factor_range[1] - self.factor_range[0])
+            + self.factor_range[0]
+        )
+
+        for i in range(len(tensors)):
+
+            tensors[i][0, ...] *= factor
+
+        return tensors
+
+
+class ReplaceInvalid:
+    """Replace invalid values (=0) of a tensor with a given vale."""
+
+    def __init__(self, value=None):
+        self.value = value
+
+    def __call__(self, tensor):
+
+        mask = get_mask(tensor)
+
+        # if mask is empty, return None
+        if not mask.any():
+            print(
+                "Mask is empty, meaning all depth values invalid. Returning unchanged."
+            )
+
+            return tensor, mask
+
+        # change value of non valid pixels
+        if self.value is not None:
+            if self.value == "max":
+                max = tensor[mask].max()
+                tensor[~mask] = max
+            elif self.value == "min":
+                min = tensor[mask].min()
+                tensor[~mask] = min
+            else:
+                tensor[~mask] = self.value
+
+        return tensor, mask
+
+
+def get_mask(depth):
+    """Get mask depth > 0.0"""
+
+    mask = depth.gt(0.0)
+
+    return mask
+
+
+def test_dataset():
+
+    print("Testing InputTargetDataset class ...")
+
+    # test specific imports
+    from torch.utils.data import DataLoader
+    import matplotlib.pyplot as plt
+
+    from data.example_dataset.dataset import get_example_dataset
+
+    dataset = get_example_dataset()
+
+    # dataloader
+    dataloader = DataLoader(dataset, batch_size=2)
+
+    for batch_id, data in enumerate(dataloader):
+
+        rgb_imgs = data[0]
+        d_imgs = data[1]
+        masks = data[2]
+        parametrizations = data[3]
+
+        for i in range(rgb_imgs.size(0)):
+
+            rgb_img = rgb_imgs[i, ...]
+            d_img = d_imgs[i, ...]
+            mask = masks[i, ...]
+            nn_parametrization = parametrizations[i, 0, ...].unsqueeze(0)
+            prob_parametrization = parametrizations[i, 1, ...].unsqueeze(0)
+
+            print(f"d range: [{d_img.min()}, {d_img.max()}]")
+
+            plt.figure(f"rgb img {i}")
+            plt.imshow(rgb_img.permute(1, 2, 0))
+            plt.figure(f"d img {i}")
+            plt.imshow(d_img.permute(1, 2, 0))
+            plt.figure(f"mask {i}")
+            plt.imshow(mask.permute(1, 2, 0))
+            plt.figure(f"parametrization, NN {i}")
+            plt.imshow(nn_parametrization.permute(1, 2, 0))
+            plt.figure(f"parametrization, Probability {i}")
+            plt.imshow(prob_parametrization.permute(1, 2, 0))
+
+        plt.show()
+
+        break  # only check first batch
+
+    print("Testing DataSet class done.")
+
+
+# run as "python -m depth_estimation.utils.data" from repo root
+if __name__ == "__main__":
+    test_dataset()
