@@ -1,4 +1,4 @@
-# PURD-Net: Polarimetric underwater recovery and depth estimation.**
+# PURD-Net
 
 ## Overview
 
