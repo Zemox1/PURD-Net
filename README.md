@@ -1,4 +1,4 @@
-# UPD-Net
+# PURD-Net
 
 ## Download
 
