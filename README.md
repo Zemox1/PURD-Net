@@ -24,7 +24,6 @@ Underwater depth estimation in turbid environments is fundamentally limited by s
 ├── depth_estimation/              # Model & training utilities
 ├── train.py
 ├── inference.py
-├── all.py
 ├── dependencies.txt
 └── LICENSE
 ```
